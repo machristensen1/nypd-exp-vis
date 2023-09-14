@@ -1,0 +1,403 @@
+---
+title: "DSTA 5301: Week 3 - NYPD Shooting incident Data Report"
+author: "Michael Christensen"
+date: "2023-06-07"
+output:
+  pdf_document: default
+  html_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE, echo = TRUE)
+```
+
+```{r lib}
+library(tidyverse)
+library(crosstable) #crosstables for presentation of tabulated data
+library(zoo) #for na.approx
+library(flextable)
+```
+
+# NYPD Shooting Incident Data Report
+
+In this report, we will be analyzing historical data regarding shootings in NYC from 2006 until now provided by the NYC OpenData repository. Our objective is to gain insight on the following:
+
+1. Is there a difference in the rate of shooting incidents across the boroughs of New York City?
+2. Is there a relationship between the demographic of the perpetrator and the demographic of the victims?
+
+
+## Importing Data
+
+For our analysis, it would be helpful to have population data for each of the boroughs in New York City to normalize any difference in population. 
+We will be using population data from the same repository where we have obtained the Shooting Incident Report Data.
+
+https://data.cityofnewyork.us/Public-Safety/NYPD-Shooting-Incident-Data-Historic-/833y-fsy8
+https://data.cityofnewyork.us/City-Government/New-York-City-Population-by-Borough-1950-2040/xywu-7bv9
+
+``` {r get_nypd_data}
+shooting_data <- 
+  read.csv("https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv")
+pop_data <- 
+  read.csv("New_York_City_Population_by_Borough__1950_-_2040.csv")
+```
+\newpage
+## Tidying Data
+
+A quick overview of our data shows that there are many unnecessary columns. We want to focus on the following:
+
+* **Date** - date of the incident, particularly the year
+* **Borough** - location of the incident by borough
+* **Demographics** - age/sex/race of the perpetrator/victim
+
+Additionally, we will convert the character columns into factors in order to remove junk data and analyze each category.
+
+``` {r tidy_nypd_data}
+glimpse(shooting_data)
+
+#Removing/renaming columns
+shooting_data <- shooting_data %>%
+  rename(Date = "OCCUR_DATE", BOROUGH = "BORO", 
+         PERP_AGE = "PERP_AGE_GROUP", VIC_AGE = "VIC_AGE_GROUP") %>%
+  select(-c(INCIDENT_KEY,OCCUR_TIME,LOC_OF_OCCUR_DESC, PRECINCT, 
+            JURISDICTION_CODE, LOC_CLASSFCTN_DESC,LOCATION_DESC, 
+            STATISTICAL_MURDER_FLAG,
+            X_COORD_CD,Y_COORD_CD,Latitude,Longitude,Lon_Lat))  
+
+#Adjusting characters to factors
+shooting_data <- as.data.frame(unclass(shooting_data), stringsAsFactors = TRUE) 
+sapply(shooting_data[-1], levels)
+
+#Cleaning empty/trash factors 
+shooting_data <- shooting_data %>%
+  replace(shooting_data == "(null)", "") %>% 
+  replace(shooting_data == "1020", "UNKNOWN") %>%
+  replace(shooting_data == "224", "UNKNOWN") %>%
+  replace(shooting_data == "940", "UNKNOWN") %>%
+  replace(shooting_data == "1022", "UNKNOWN")
+
+shooting_data <- shooting_data %>%
+  replace(shooting_data == "" | shooting_data == " ", NA) %>%
+  replace_na(list(PERP_AGE="UNKNOWN", PERP_SEX = "U", 
+                  PERP_RACE = "UNKNOWN", VIC_AGE="UNKNOWN", 
+                  VIC_SEX = "U", VIC_RACE = "UNKNOWN")) %>%
+  droplevels()
+
+#Renaming Factor Levels for Future Tables
+fct_count(shooting_data$PERP_RACE)
+levels(shooting_data$PERP_RACE) <- c("AIAN", "AAPI", "B", "B H", 
+                                 "UNKNOWN", "W", "W H")
+levels(shooting_data$VIC_RACE) <- c("AIAN", "AAPI", "B", "B H", 
+                                "UNKNOWN", "W", "W H")
+ 
+#Adjusting date format
+shooting_data <- shooting_data %>%
+  mutate(Date = mdy(Date)) %>%
+  mutate(Year = year(Date)) %>%
+  arrange(Date)
+
+shooting_data <- shooting_data %>%
+  group_by(BOROUGH, Year) %>%
+  mutate(cases = n()) %>%
+  ungroup()
+
+shooting_data$Year <- as.integer(shooting_data$Year)
+
+```
+\newpage
+
+## Appending Population Data
+
+Now lets join the population data set to the main data set.
+
+``` {r tidy_pop_data}
+
+#Wrangling population data
+pop_data <- pop_data %>%
+  select(-c(Age.Group,
+            X1950:X1990...Boro.share.of.NYC.total,
+            X2000...Boro.share.of.NYC.total,
+            X2010...Boro.share.of.NYC.total,
+            X2020...Boro.share.of.NYC.total:X2040...Boro.share.of.NYC.total))%>%
+  rename("BOROUGH" = "Borough", "2000" = "X2000", 
+         "2010" = "X2010", "2020" = "X2020")
+
+pop_data$BOROUGH <- pop_data$BOROUGH %>%
+  toupper() %>% trimws("l")
+
+pop_data <- pop_data %>%
+  pivot_longer(cols = -c(BOROUGH), names_to ="Year", values_to = "Population")
+
+pop_data$Year <- as.integer(pop_data$Year)
+
+#Interpolating Population Data
+pop_data <- pop_data %>% 
+  group_by(BOROUGH) %>%
+  complete(Year = full_seq(2000:2022,1)) %>% 
+    #In this line, we are interpolating the population between years.
+    #Alternatively, we could use the nearest available 
+    #year without changing results significantly.
+  mutate_all(na.approx, rule = 2)
+
+#Appending Population Data to Main Data Set
+shooting_data <- left_join(shooting_data, pop_data, by = c("BOROUGH" = "BOROUGH", 
+                                                   "Year" = "Year"))
+
+#Cases by borough
+shootings_by_borough <- shooting_data %>%
+  group_by(BOROUGH, Year) %>%
+  summarize(cases = max(cases), Population = round(max(Population),0)) %>%
+  mutate(cases_per_thou = cases * 1000 / Population) %>%
+  ungroup()
+
+shooting_totals <- shooting_data %>%
+  group_by(Year) %>%
+  summarize(cases = max(cases), Population = round(max(Population),0)) %>%
+  mutate(cases_per_thou = cases * 1000 / Population) %>%
+  ungroup()
+
+```
+
+\newpage
+## Visualizing the Data
+
+The first question we would like to answer is: is there a difference in the rate of shooting incidents across the boroughs of New York City? We will do so by graphing the yearly cases for each borough and taking a quick look at key statistics to see how each borough compares.
+
+### Shooting Incidents over Time (Total)
+Let's take a quick glance at the total cases in New York to see what our data looks like.
+
+``` {r vis_nypd_data}
+shooting_totals %>% 
+  ggplot(aes(x=Year,y=cases)) +
+  geom_line() +
+  geom_point() +
+  theme(legend.position="bottom",
+        axis.text.x = element_text(angle=90)) +
+  labs(title = "Shooting Incidents in NYC", y=NULL)
+```
+
+Since our data doesn't appear linear, we will try to find a polynomial to approximately model our data, as the number of incidents per year. To do this, we will be doing an ANOVA test for polynomial models up to degree 5. 
+
+``` {r model_data}
+est_1 <- lm(cases ~ Year, data = shooting_totals)
+est_2 <- lm(cases ~ poly(Year,2), data = shooting_totals)
+est_3 <- lm(cases ~ poly(Year,3), data = shooting_totals)
+est_4 <- lm(cases ~ poly(Year,4), data = shooting_totals)
+est_5 <- lm(cases ~ poly(Year,5), data = shooting_totals)
+anova(est_1,est_2,est_3,est_4,est_5)
+summary(est_4)
+```
+
+With a p value of 0.9384 for the quartic model, we can conclude that the quartic model is a reasonable fit for our data, with an r squared value of 0.643. Here is a look at the smoothed data:
+
+``` {r vis_modeled_data}
+shooting_totals %>% 
+  ggplot(aes(x=Year,y=cases)) +
+  geom_smooth(method = "lm", formula = y ~ poly(x,4)) +
+  geom_point() +
+  theme(legend.position="bottom",
+        axis.text.x = element_text(angle=90)) +
+  labs(title = "Shooting Incidents in NYC", y=NULL)
+```
+
+We can do a similar analysis for each of the boroughs, but for brevity we will assume the same quartic model for each.
+
+### Shooting Incidents by Borough over Time (Total)
+
+```{r vis_boro_data}
+shootings_by_borough %>% 
+  ggplot(aes(x=Year,y=cases,color = BOROUGH)) +
+  geom_smooth(method = "lm", formula = y ~ poly(x,4)) +
+  geom_point() +
+  theme(legend.position="bottom",
+        axis.text.x = element_text(angle=90)) +
+  labs(title = "Shooting Incidents by Borough", y=NULL)
+
+shootings_by_borough %>% 
+  ggplot(aes(x=BOROUGH,y=cases))+
+  geom_boxplot()
+```
+
+### Shooting Incidents by Borough over Time (per Capita)
+
+``` {r vis_boro_cap_data}
+shootings_by_borough %>% 
+  ggplot(aes(x=Year,y=cases_per_thou,color = BOROUGH)) +
+  geom_smooth(method = "lm", formula = y ~ poly(x,4)) +
+  geom_point() +
+  theme(legend.position="bottom",
+        axis.text.x = element_text(angle=90)) +
+  labs(title = "Shooting Incidents by Borough per Thousand", y=NULL)
+
+shootings_by_borough %>% 
+  ggplot(aes(x=BOROUGH,y=cases_per_thou))+
+  geom_boxplot()
+```
+
+A quick glance of the data shows that, although the Brooklyn has a higher number of shooting incidents, when corrected for by population, it appears the Bronx has the most shooting incidents per capita. We can verify this information by taking a look at the means by area, and noting the differences between each borough:
+
+``` {r summary_boro_data}
+shootings_by_borough %>%
+  group_by(BOROUGH) %>%
+  summarise(casetot=sum(cases), mean = mean(cases), 
+            mean_thou = mean(cases_per_thou), borosd = sd(cases), 
+            sd_thou= sd(cases_per_thou)) %>%
+  arrange(mean_thou)
+```
+
+\newpage
+
+## Demographic Analysis
+
+Recall that the other major question we want answered is: Is there a relationship between the demographic of the perpetrator and the demographic of the victims? There are many ways to approach this question - for example, are the age/race/sex of the victims and the perpetrators related in some way? One way to test that is through a chi-squared test of independence - we will be focusing on comparing within the same demographic category (i.e. age v. age, etc.).
+
+
+### Shootings by Age
+
+**Null Hypothesis**: The age of the victim and the age of the perpetrator are **not related (independent)**.
+
+**Alternative Hypothesis**: The age of the victim and the age of the perpetrator **are related (not independent)**.
+
+We can cross tabulate our data to get an overhead view of the proportions for the victims' and perpetrators' ages:
+
+```{r incident_age_analysis}
+
+age_table <- shooting_data %>%
+  select(VIC_AGE, PERP_AGE) %>%
+  filter_all(all_vars(. !="UNKNOWN")) %>%
+  droplevels() %>%
+  mutate(VIC_AGE = set_label(VIC_AGE, "Victim Age"),
+         PERP_AGE = set_label(PERP_AGE, "Perpetrator Age"))
+
+age_table %>%
+  crosstable(c(PERP_AGE), by = VIC_AGE, total = "both") %>%
+  as_flextable() %>% fit_to_width(6.5)
+
+```
+\newpage
+
+We can see that the 65+ category is a very small proportion of the population compared to the rest of the categories  - a low expected value would invalidate the assumptions we need to make when performing a chi-squared test, so let's collapse that data in the 45-64 age bracket.
+
+
+
+``` {r chisq_age}
+fct_count(age_table$VIC_AGE)
+  #Combine age groups
+age_table$PERP_AGE <- 
+  fct_collapse(age_table$PERP_AGE, "45+" = c("45-64", "65+"))
+age_table$VIC_AGE <- 
+  fct_collapse(age_table$VIC_AGE, "45+" = c("45-64", "65+"))
+
+age_table %>%
+  crosstable(c(PERP_AGE), by = VIC_AGE, total = "both") %>%
+  as_flextable() %>% fit_to_width(6.5)
+
+
+chisq.test(table(age_table))
+
+```
+We **reject the null hypothesis** and can conclude that the age of the victim and the age of the perpetrator are not independent.
+
+\newpage
+
+### Shootings by Race
+
+We will do a similar analysis for race and sex.
+
+**Null Hypothesis**: The race of the victim and the race of the perpetrator are **not related (independent)**.
+
+**Alternative Hypothesis**: The race of the victim and the race of the perpetrator **are related (not independent)**.
+
+``` {r race_summary}
+#Race Data
+race_table <- shooting_data %>%
+  select(VIC_RACE, PERP_RACE) %>%
+  filter_all(all_vars(. !="UNKNOWN")) %>%
+  droplevels() %>%
+  mutate(VIC_RACE = set_label(VIC_RACE, "Victim Race"), 
+         PERP_RACE = set_label(PERP_RACE, "Perpetrator Race"))
+
+
+race_table %>%
+  crosstable(c(PERP_RACE), by = VIC_RACE, total = "both") %>%
+  as_flextable() %>% fit_to_width(6.5)
+
+```
+
+Note that the Asian/Pacific Islander and American Indian and Alaskan Native categories have a very low proportion relative to the total population; we will need to omit them in order to perform an accurate chi-squared test.
+
+\newpage
+
+``` {r chisq_race}
+race_table <- race_table %>%
+  filter_all(all_vars(. != "AAPI")) %>%
+  filter_all(all_vars(. != "AIAN")) %>%
+  droplevels() %>%
+  mutate(VIC_RACE = set_label(VIC_RACE, "Victim Race"), 
+         PERP_RACE = set_label(PERP_RACE, "Perpetrator Race"))
+
+race_table %>%
+  crosstable(c(PERP_RACE), by = VIC_RACE, total = "both") %>%
+  as_flextable() %>% fit_to_width(6.5)
+
+chisq.test(table(race_table))
+
+```
+
+We **reject the null hypothesis** and can conclude that the race of the victim and the race of the perpetrator are not independent.
+
+\newpage
+
+### Shootings by Sex
+
+**Null Hypothesis**: The sex of the victim and the sex of the perpetrator are **not related (independent)**.
+
+**Alternative Hypothesis**: The sex of the victim and the sex of the perpetrator **are related (not independent)**.
+
+``` {r sex}
+#Sex Data
+sex_table <- shooting_data %>%
+  select(VIC_SEX, PERP_SEX) %>%
+  filter_all(all_vars(. !="U")) %>%
+  droplevels() %>%
+  mutate(VIC_SEX = set_label(VIC_SEX, "Victim Sex"),
+         PERP_SEX = set_label(PERP_SEX, "Perpetrator Sex"))
+
+sex_table %>%
+  crosstable(c(PERP_SEX), by = VIC_SEX, total = "both") %>%
+  as_flextable() %>% fit_to_width(6.5)
+
+chisq.test(table(sex_table))
+
+```
+
+We **reject the null hypothesis** and can conclude that the sex of the victim and the sex of the perpetrator are not independent.
+
+## Bias Analysis
+
+Let's quickly go over some potential sources of bias. Particularly notable is almost half of the information about the perpetrator of shooting incidents is missing:
+
+``` {r bias_summary}
+fct_count(shooting_data$PERP_AGE)
+fct_count(shooting_data$PERP_RACE)
+fct_count(shooting_data$PERP_SEX)
+```
+
+This could clue us into a potential large source of recall bias. It is not known how the race, age, and sex of the perpetrator are verified and recorded - for example, if shooting victims or witnesses are asked to recall information about the perpetrator, or if the person recording the data carries their own bias, this could introduce bias into the data set. A large chunk of missing data can easily cause particular demographics to be under or over-represented. As for bias within this report, a cursory glance at the cross-tables may lead the reader to make a biased assumption about a particular race, sex, or age group. While we performed analysis on the demographics of the victims and perpetrators, we primarily focused on the relationship between the victim and the perpetrator without doing an in-depth analysis on a particular race, gender, or sex.
+
+## Final Thoughts
+
+Recall that we sought to gain insight on the following:
+
+1. Is there a difference in the rate of shooting incidents across the boroughs of New York City?
+2. Is there a relationship between the demographic of the perpetrator and the demographic of the victims?
+
+From our analysis, we have demonstrated that:
+
+1. shootings occur, in order of prevalence, the most per capita in the Bronx, followed by Brooklyn, Manhattan, Queens, and lastly Staten Island and
+2. there is potentially a relationship between the demographics of the perpetrator and victim, at least within each category (age, race, and sex).
+
+\newpage
+``` {r sessionInfo}
+sessionInfo()
+```
