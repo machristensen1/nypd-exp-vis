@@ -1,5 +1,5 @@
 ---
-title: "DSTA 5301: Week 3 - NYPD Shooting incident Data Report"
+title: "NYPD Shooting Incident Exploratory Analysis"
 author: "Michael Christensen"
 date: "2023-06-07"
 output:
@@ -17,6 +17,7 @@ library(tidyverse)
 library(crosstable) #crosstables for presentation of tabulated data
 library(zoo) #for na.approx
 library(flextable)
+library(rcompanion)
 ```
 
 # NYPD Shooting Incident Data Report
@@ -174,6 +175,8 @@ shooting_totals %>%
   theme(legend.position="bottom",
         axis.text.x = element_text(angle=90)) +
   labs(title = "Shooting Incidents in NYC", y=NULL)
+
+summary(shooting_totals)
 ```
 
 Since our data doesn't appear linear, we will try to find a polynomial to approximately model our data, as the number of incidents per year. To do this, we will be doing an ANOVA test for polynomial models up to degree 5. 
@@ -216,6 +219,7 @@ shootings_by_borough %>%
 shootings_by_borough %>% 
   ggplot(aes(x=BOROUGH,y=cases))+
   geom_boxplot()
+  
 ```
 
 ### Shooting Incidents by Borough over Time (per Capita)
@@ -249,8 +253,10 @@ shootings_by_borough %>%
 
 ## Demographic Analysis
 
-Recall that the other major question we want answered is: Is there a relationship between the demographic of the perpetrator and the demographic of the victims? There are many ways to approach this question - for example, are the age/race/sex of the victims and the perpetrators related in some way? One way to test that is through a chi-squared test of independence - we will be focusing on comparing within the same demographic category (i.e. age v. age, etc.).
+Recall that the other major question we want answered is: Is there a relationship between the demographic of the perpetrator and the demographic of the victims? There are many ways to approach this question - for example, are the age/race/sex of the victims and the perpetrators related in some way? One way to test that is through a chi-squared test of independence - we will be focusing on comparing within the same demographic category (i.e. age v. age, etc.). Another way is to do a Cramer's V test.
 
+
+## Chi-Squared Tests
 
 ### Shootings by Age
 
@@ -294,9 +300,10 @@ age_table %>%
 
 
 chisq.test(table(age_table))
+cramerV(table(age_table))
 
 ```
-We **reject the null hypothesis** and can conclude that the age of the victim and the age of the perpetrator are not independent.
+We **reject the null hypothesis** and can conclude that the age of the victim and the age of the perpetrator are not independent. We note a weak, but statistically significant association between these variables from the low Cramer V value.
 
 \newpage
 
@@ -341,10 +348,11 @@ race_table %>%
   as_flextable() %>% fit_to_width(6.5)
 
 chisq.test(table(race_table))
+cramerV(table(race_table))
 
 ```
 
-We **reject the null hypothesis** and can conclude that the race of the victim and the race of the perpetrator are not independent.
+We **reject the null hypothesis** and can conclude that the race of the victim and the race of the perpetrator are not independent. We note a moderate, but statistically significant association between these variables from the low Cramer V value.
 
 \newpage
 
@@ -368,10 +376,11 @@ sex_table %>%
   as_flextable() %>% fit_to_width(6.5)
 
 chisq.test(table(sex_table))
+cramerV(table(sex_table))
 
 ```
 
-We **reject the null hypothesis** and can conclude that the sex of the victim and the sex of the perpetrator are not independent.
+We **reject the null hypothesis** and can conclude that the sex of the victim and the sex of the perpetrator are not independent. We note a weak, but statistically significant association between these variables from the low Cramer V value.
 
 ## Bias Analysis
 
@@ -395,7 +404,7 @@ Recall that we sought to gain insight on the following:
 From our analysis, we have demonstrated that:
 
 1. shootings occur, in order of prevalence, the most per capita in the Bronx, followed by Brooklyn, Manhattan, Queens, and lastly Staten Island and
-2. there is potentially a relationship between the demographics of the perpetrator and victim, at least within each category (age, race, and sex).
+2. there is a weak, but statistically significant relationship between the demographics of the perpetrator and victim, at least within each category (age, race, and sex).
 
 \newpage
 ``` {r sessionInfo}
